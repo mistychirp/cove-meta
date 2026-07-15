@@ -1,0 +1,6 @@
+[submodule "cove-server"]
+	path = cove-server
+	url = https://github.com/mistychirp/cove-server.git
+[submodule "cove-web"]
+	path = cove-web
+	url = https://github.com/mistychirp/cove-web.git

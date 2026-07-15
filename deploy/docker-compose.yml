@@ -1,8 +1,8 @@
 name: cove
 
 # Cove production stack. Needs a .env next to it (see .env.example).
-# Builds cove-server and cove-web, which live next to cove-meta (this
-# repository), two levels up from this file.
+# Builds cove-server and cove-web, checked out as git submodules of this
+# repository (cove-meta), one level up from this file.
 
 services:
   caddy:
@@ -26,12 +26,12 @@ services:
 
   # Builds the client bundle into the web-dist volume, then exits.
   web:
-    build: ../../cove-web
+    build: ../cove-web
     volumes:
       - web-dist:/dist
 
   server:
-    build: ../../cove-server
+    build: ../cove-server
     restart: unless-stopped
     depends_on:
       db:

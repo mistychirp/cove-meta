@@ -28,14 +28,19 @@ proxy. Forgetting UDP means "it connects and stays silent".
 
 ## 3. Installation
 
-```sh
-# side by side — compose builds the neighbouring directories
-git clone https://github.com/mistychirp/cove-server.git
-git clone https://github.com/mistychirp/cove-web.git
-git clone <this repository> cove-meta      # provides deploy/
+`cove-server` and `cove-web` are git submodules of this repository, checked out
+right next to `deploy/`:
 
+```sh
+git clone --recurse-submodules <this repository> cove-meta
 cd cove-meta/deploy
 cp .env.example .env
+```
+
+If you already cloned without `--recurse-submodules`:
+
+```sh
+git submodule update --init
 ```
 
 Generate the secrets and put them into `.env`:
@@ -74,8 +79,10 @@ After that registration is closed: you hand out codes to friends via the
 ## 5. Updating
 
 ```sh
-cd cove-server && git pull && cd ../cove-web && git pull
-cd ../cove-meta/deploy && docker compose up -d --build
+cd cove-meta
+git pull
+git submodule update --remote
+cd deploy && docker compose up -d --build
 ```
 
 The server applies database migrations on boot — nothing to do by hand.

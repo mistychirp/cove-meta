@@ -123,22 +123,47 @@ Owned by the design language (M3 Expressive), **not** by themes.
 --cove-font       UI stack
 --cove-font-mono  code and code blocks
 
-/* Density — the one axis where M3 Expressive and a terminal aesthetic pull
-   apart. M3 wants air; the Tokyo Night crowd usually wants rows on screen.
-   Kept as tokens so the choice stays open rather than baked into components. */
---cove-gap        12px
---cove-row-pad    8px
+/* Type scale — five named steps. Sizes had drifted to nine ad-hoc values with
+   no system, which is exactly what a scale exists to prevent. */
+--cove-type-label     11px   uppercase headers, timestamps
+--cove-type-small     12px   hints, metadata, captions
+--cove-type-body      15px   messages and default text
+--cove-type-title     18px   modal and section titles
+--cove-type-headline  24px   the login screen
 
 /* Elevation */
---cove-shadow-1 / --cove-shadow-2 / --cove-shadow-3
+--cove-shadow-2 / --cove-shadow-3
 ```
+
+Two sizes are deliberately outside the scale, both marked in the CSS: `0.9em`
+for inline code and `1.1em` for markdown headings scale *relative to the message
+they sit in, and `16px` on the chip's × sizes a glyph as an icon, not as text.
+
+## 3a. Density — the second axis
+
+This is where M3 Expressive and a terminal aesthetic genuinely pull apart: M3
+wants air, the Tokyo Night crowd wants rows on screen. Rather than pick a winner
+it is a user-selectable axis, **independent of the palette** — every theme works
+at every density.
+
+| Token | comfy | compact |
+|-------|-------|---------|
+| `--cove-gap` | 12px | 8px |
+| `--cove-row-pad` | 8px | 4px |
+| `--cove-msg-gap` | 10px | 5px |
+| `--cove-pane-pad` | 16px | 10px |
+
+Applied as `[data-density='compact' \| 'comfy']` on the root, exactly like a
+palette. Density is *not* theme-owned: a theme must never set these.
 
 ## 4. How a theme is applied
 
 Two mechanisms, deliberately layered so they compose:
 
-- **Built-in palettes** are plain CSS under `:root[data-theme="<id>"]`. No JS,
-  no flash, works before React mounts.
+- **Built-in palettes** are plain CSS under `[data-theme="<id>"]`. No JS, no
+  flash, works before React mounts. The selector is not anchored to `:root` on
+  purpose: any element can opt into a palette, which is how the picker renders a
+  live swatch of a theme that is not currently active.
 - **Generated palettes** (M3 seed, DMS) are written by JS as inline properties on
   `document.documentElement`. Inline style beats any selector, so a generated
   palette naturally overrides the built-in default.

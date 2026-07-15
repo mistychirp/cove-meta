@@ -40,7 +40,7 @@ cp .env.example .env
 If you already cloned without `--recurse-submodules`:
 
 ```sh
-git submodule update --init
+git submodule update --init --recursive
 ```
 
 Generate the secrets and put them into `.env`:
@@ -81,9 +81,21 @@ After that registration is closed: you hand out codes to friends via the
 ```sh
 cd cove-meta
 git pull
-git submodule update --remote
+git submodule update --init --recursive
 cd deploy && docker compose up -d --build
 ```
+
+**The submodule step is not optional.** `git pull` moves the recorded pointer
+and fetches the objects, but it leaves each submodule's working tree on the old
+commit — so the source on disk is unchanged, Docker's `COPY . .` hits the build
+cache, and the deploy silently ships the previous version. `git config
+submodule.recurse true` makes `git pull` do this step for you.
+
+Use `git submodule update` **without** `--remote`: that checks out the commit
+this repository pins, which is what makes a deploy reproducible and rollback by
+`cove-meta` commit meaningful. `--remote` jumps to the branch tip instead and can
+land a client version that `cove-meta` never referenced. Reach for it only when
+deliberately bumping the pin — and then commit the new pointer here.
 
 The server applies database migrations on boot — nothing to do by hand.
 

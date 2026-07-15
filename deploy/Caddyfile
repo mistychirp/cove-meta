@@ -1,5 +1,5 @@
-# Caddy сам получает и продлевает сертификат Let's Encrypt для COVE_DOMAIN.
-# Клиент и API живут на одном домене — поэтому CORS в проде не нужен вообще.
+# Caddy obtains and renews the Let's Encrypt certificate for COVE_DOMAIN itself.
+# Client and API share one origin, so production needs no CORS at all.
 {$COVE_DOMAIN} {
 	encode zstd gzip
 
@@ -8,7 +8,7 @@
 		reverse_proxy server:8080
 	}
 
-	# WebSocket-gateway. Caddy проксирует апгрейд сам, без спец-настроек.
+	# WebSocket gateway. Caddy handles the upgrade on its own, no special config.
 	handle /gateway {
 		reverse_proxy server:8080
 	}
@@ -17,13 +17,14 @@
 		reverse_proxy server:8080
 	}
 
-	# Сигналинг LiveKit (WebSocket). Медиа сюда НЕ идёт — оно летит напрямую
-	# по UDP на хост, мимо Caddy. Поэтому важен проброс UDP-портов на роутере.
+	# LiveKit signaling (WebSocket). Media does NOT go through here: it flows
+	# straight to the host over UDP, bypassing Caddy. Hence the UDP port
+	# forwards on the router matter.
 	handle_path /livekit/* {
 		reverse_proxy livekit:7880
 	}
 
-	# Всё остальное — статика клиента. SPA: неизвестные пути отдаём index.html.
+	# Everything else is the client bundle. SPA: unknown paths serve index.html.
 	handle {
 		root * /srv
 		try_files {path} /index.html

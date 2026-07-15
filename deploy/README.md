@@ -1,44 +1,44 @@
-# Развёртывание Cove
+# Deploying Cove
 
-Стек: Caddy (TLS) + Go-сервер + Postgres + LiveKit. Клиент собирается в статику
-и отдаётся тем же Caddy — поэтому клиент и API живут на одном домене, и никакой
-настройки адреса сервера пользователю не нужно.
+The stack is Caddy (TLS) + the Go server + Postgres + LiveKit. The client is
+built into static files and served by the same Caddy, so the client and the API
+live on one domain and users never have to type a server address.
 
-## 1. Что нужно на сервере
+## 1. Requirements
 
 - Docker + Docker Compose
-- Домен, чья A-запись ведёт на **публичный** IP этого сервера
-- Пробросы на роутере (см. ниже)
+- A domain whose A record points at this server's **public** IP
+- Router port forwards (see below)
 
-## 2. Порты на роутере
+## 2. Router ports
 
-Это единственный шаг, который нельзя автоматизировать. Без него не будет
-ни сертификата, ни голоса.
+This is the one step that cannot be automated. Without it you get neither a
+certificate nor voice.
 
-| Порт | Протокол | Зачем |
-|------|----------|-------|
-| 80 | TCP | Let's Encrypt (проверка домена) + редирект на HTTPS |
-| 443 | TCP | сам сайт, API, WebSocket-gateway, сигналинг LiveKit |
-| 3478 | UDP | встроенный TURN (друзья за строгим NAT) |
-| 50000–50060 | UDP | медиа-трафик голоса и демонстрации экрана |
+| Port | Protocol | Why |
+|------|----------|-----|
+| 80 | TCP | Let's Encrypt (domain validation) + redirect to HTTPS |
+| 443 | TCP | the site itself, API, WebSocket gateway, LiveKit signaling |
+| 3478 | UDP | embedded TURN (friends behind strict NAT) |
+| 50000–50060 | UDP | voice and screen share media |
 
-**Почему UDP обязателен:** через Caddy проходит только сигналинг. Само
-аудио/видео летит напрямую по UDP на этот сервер, мимо реверс-прокси.
-Забыть про UDP — значит получить «подключается и молчит».
+**Why UDP is mandatory:** only signaling passes through Caddy. The audio and
+video themselves fly straight to this server over UDP, bypassing the reverse
+proxy. Forgetting UDP means "it connects and stays silent".
 
-## 3. Установка
+## 3. Installation
 
 ```sh
-# рядом друг с другом — compose собирает соседние каталоги
+# side by side — compose builds the neighbouring directories
 git clone https://github.com/mistychirp/cove-server.git
 git clone https://github.com/mistychirp/cove-web.git
-git clone <этот репозиторий> cove-meta      # даёт deploy/
+git clone <this repository> cove-meta      # provides deploy/
 
 cd cove-meta/deploy
 cp .env.example .env
 ```
 
-Сгенерировать секреты и вписать их в `.env`:
+Generate the secrets and put them into `.env`:
 
 ```sh
 echo "COVE_DB_PASSWORD=$(openssl rand -base64 24)"
@@ -46,61 +46,62 @@ echo "COVE_LIVEKIT_API_KEY=$(openssl rand -hex 8)"
 echo "COVE_LIVEKIT_API_SECRET=$(openssl rand -base64 36)"
 ```
 
-Домен нужно поправить ещё в одном месте — `livekit.yaml`, поле `turn.domain`
-(LiveKit не читает его из окружения).
+The domain has to be set in one more place — `livekit.yaml`, field `turn.domain`
+(LiveKit does not read it from the environment).
 
-Запуск:
+Start:
 
 ```sh
 docker compose up -d --build
-docker compose logs -f caddy      # смотрим, как выписывается сертификат
+docker compose logs -f caddy      # watch the certificate being issued
 ```
 
-Проверка:
+Check:
 
 ```sh
-curl https://<домен>/health        # {"status":"ok"}
-curl https://<домен>/api/v1/instance   # voice_enabled: true
+curl https://<domain>/health           # {"status":"ok"}
+curl https://<domain>/api/v1/instance  # voice_enabled: true
 ```
 
-## 4. Первый вход
+## 4. First login
 
-Открой `https://<домен>` и зарегистрируйся — **первый аккаунт автоматически
-становится владельцем инстанса**, код регистрации ему не нужен.
+Open `https://<domain>` and register — **the first account automatically becomes
+the instance owner** and needs no registration code.
 
-Дальше регистрация закрыта: друзьям коды выдаёшь ты, кнопкой
-«Коды регистрации» в сайдбаре.
+After that registration is closed: you hand out codes to friends via the
+"Registration codes" button in the sidebar.
 
-## 5. Обновление
+## 5. Updating
 
 ```sh
 cd cove-server && git pull && cd ../cove-web && git pull
 cd ../cove-meta/deploy && docker compose up -d --build
 ```
 
-Миграции БД накатываются сервером при старте — руками ничего делать не надо.
+The server applies database migrations on boot — nothing to do by hand.
 
-## 6. Данные и бэкап
+## 6. Data and backups
 
-Всё живёт в томах Docker: `cove-db` (база) и `cove-media` (вложения).
+Everything lives in Docker volumes: `cove-db` (database) and `cove-media`
+(attachments).
 
 ```sh
-# дамп базы
+# database dump
 docker compose exec -T db pg_dump -U cove cove > cove-$(date +%F).sql
-# вложения
+# attachments
 docker run --rm -v cove_cove-media:/m -v "$PWD":/out alpine \
   tar czf /out/media-$(date +%F).tar.gz -C /m .
 ```
 
-## 7. Если что-то не так
+## 7. Troubleshooting
 
-- **Сертификат не выписывается** — проверь, что домен снаружи резолвится в
-  публичный IP этого сервера и что порт 80 проброшен. Изнутри сети домен может
-  резолвиться в локальный адрес (hairpin NAT) — это нормально, проверять надо
-  внешним резолвером.
-- **Голос подключается, но тишина** — почти всегда не проброшен UDP
-  (3478 и 50000–50060).
-- **Микрофон/экран недоступны** — браузер даёт их только по HTTPS. Проверь,
-  что открыт `https://`, а не `http://`.
-- **Голос не нужен** — убери `COVE_LIVEKIT_*` из `.env`: инстанс станет
-  текстовым, а не сломается.
+- **No certificate is issued** — check that the domain resolves from the outside
+  to this server's public IP and that port 80 is forwarded. From inside the
+  network the domain may resolve to a local address (hairpin NAT); that is
+  normal, verify with an external resolver.
+- **Voice connects but stays silent** — almost always missing UDP forwards
+  (3478 and 50000–50060).
+- **Microphone/screen unavailable** — browsers only grant them over HTTPS. Make
+  sure you opened `https://`, not `http://`.
+- **Don't want voice** — drop the `COVE_LIVEKIT_*` entries from `.env`: the
+  instance becomes text-only instead of breaking.

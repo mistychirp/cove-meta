@@ -1,17 +1,17 @@
-# LiveKit для продакшна (домашний сервер за NAT).
-# Ключи задаются через переменную LIVEKIT_KEYS в docker-compose — в файле их нет.
+# LiveKit for production (home server behind NAT).
+# Keys come from the LIVEKIT_KEYS variable in docker-compose, not from here.
 port: 7880
 
 rtc:
   tcp_port: 7881
   port_range_start: 50000
   port_range_end: 50060
-  # За домашним NAT LiveKit сам выяснит публичный адрес через STUN и будет
-  # анонсировать его клиентам. Без этого они попытаются идти на 192.168.x.x.
+  # Behind home NAT, LiveKit discovers its public address via STUN and
+  # advertises that to clients. Without this they would try 192.168.x.x.
   use_external_ip: true
 
-# Встроенный TURN — для тех, у кого NAT/файрвол не пускает прямой UDP
-# (мобильный интернет, рабочие сети). Без него у части друзей голос не пойдёт.
+# Embedded TURN, for people whose NAT/firewall blocks direct UDP (mobile
+# networks, corporate Wi-Fi). Without it some friends get no voice at all.
 turn:
   enabled: true
   udp_port: 3478

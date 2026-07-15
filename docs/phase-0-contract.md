@@ -1,38 +1,39 @@
 # Cove — Phase 0 Contract (draft v0.1)
 
-> Это **контракт**, а не реализация. Референсный сервер и клиент — просто первые
-> его реализации. Стабильность и версионирование этого документа — то, что
-> отличает Cove от Discord / Stoat / Spacebar и делает возможным "море клиентов".
+> This is a **contract**, not an implementation. The reference server and client
+> are merely its first implementations. Keeping this document stable and
+> versioned is what sets Cove apart from Discord / Stoat / Spacebar, and what
+> makes an ocean of clients possible.
 
-## 0. Сквозные решения
+## 0. Cross-cutting decisions
 
-| Тема | Решение | Почему |
-|------|---------|--------|
-| Идентификаторы | **UUIDv7** (текстом в API) | Сортируемы по времени, стандарт, без координации worker-id как у Snowflake. Дают бесплатную пагинацию по id. |
-| Время | UTC, RFC 3339 строкой (`2026-07-14T19:29:00Z`) | Однозначно, человекочитаемо. |
-| Пустые списки | Всегда `[]`, **никогда `null`** | Клиент не должен защищаться от двух форм пустоты. (В Go nil-слайс сериализуется в `null` — инициализируем через `make(...)`.) |
-| Транспорт событий | WebSocket gateway, envelope `{op, t, s, d}` | Как у Discord, но задокументированный и версионированный. |
-| REST-версия | префикс пути `/api/v1/...` | Явное версионирование контракта. |
-| Gateway-версия | query `?v=1` при подключении | Клиент и сервер могут расходиться в версиях — self-host требует этого. |
-| Права | 64-битная маска, роли + оверрайды на канал | Модель Discord, проверенная годами. |
-| Контент сообщения | сырой markdown-строкой, рендер на клиенте | Проще хранить/искать; entity-модель Telegram избыточна для старта. |
+| Topic | Decision | Why |
+|-------|----------|-----|
+| Identifiers | **UUIDv7** (as text in the API) | Time-sortable, standard, no worker-id coordination like Snowflake. Gives pagination by id for free. |
+| Time | UTC, RFC 3339 string (`2026-07-14T19:29:00Z`) | Unambiguous and human-readable. |
+| Empty lists | Always `[]`, **never `null`** | A client must not have to defend against two kinds of emptiness. (A nil slice in Go serialises to `null` — initialise with `make(...)`.) |
+| Event transport | WebSocket gateway, envelope `{op, t, s, d}` | Like Discord's, but documented and versioned. |
+| REST version | path prefix `/api/v1/...` | Explicit versioning of the contract. |
+| Gateway version | query `?v=1` on connect | Client and server may run different versions — self-hosting demands it. |
+| Permissions | 64-bit mask, roles + per-channel overrides | Discord's model, proven over years. |
+| Message content | raw markdown string, rendered by the client | Simpler to store and search; Telegram's entity model is overkill to start with. |
 
 ---
 
-## 1. Модель данных (Phase 0)
+## 1. Data model (Phase 0)
 
-Поля со `*` — обязательны в Phase 0. Остальные заложены на будущее, но таблицы
-создаём сразу, чтобы не мигрировать больно.
+Fields marked `*` are required in Phase 0. The rest are groundwork for the
+future, but the tables exist from the start to avoid painful migrations.
 
 ### User
 ```
 id*            uuidv7 (pk)
 username*      text, unique, [a-z0-9_], 2..32
 display_name*  text, 1..64
-email*         text, unique (для входа/восстановления)
+email*         text, unique (for login/recovery)
 password_hash* text (argon2id)
 avatar         text (media id, nullable)
-instance_owner* bool, default false   # может выпускать RegistrationToken (см. §6)
+instance_owner* bool, default false   # may issue RegistrationTokens (see §6)
 created_at*    timestamptz
 ```
 
@@ -40,13 +41,13 @@ created_at*    timestamptz
 ```
 id*         uuidv7 (pk)
 user_id*    uuidv7 (fk User)
-token_hash* bytea, unique        # sha256(bearer-токен); сам токен не хранится
+token_hash* bytea, unique        # sha256(bearer token); the token is never stored
 created_at* timestamptz
 expires_at* timestamptz
 user_agent  text
 ```
 
-### Server  (в API — "server"; внутри допустимо "guild")
+### Server  (called "server" in the API; "guild" is acceptable internally)
 ```
 id*         uuidv7 (pk)
 name*       text, 1..100
@@ -55,13 +56,13 @@ icon        text (media id, nullable)
 created_at* timestamptz
 ```
 
-### Member  (членство пользователя в сервере)
+### Member  (a user's membership in a server)
 ```
 server_id*  uuidv7 (fk Server)   # (server_id, user_id) = pk
 user_id*    uuidv7 (fk User)
 nickname    text, nullable
 joined_at*  timestamptz
-# роли участника — через таблицу MemberRole (many-to-many)
+# a member's roles live in the MemberRole table (many-to-many)
 ```
 
 ### Role
@@ -70,47 +71,49 @@ id*          uuidv7 (pk)
 server_id*   uuidv7 (fk Server)
 name*        text, 1..100
 color        int (0xRRGGBB, nullable)
-permissions* bigint (битовая маска, см. §2)
-position*    int (иерархия; больше = выше)
-hoist*       bool (показывать отдельной группой в списке)
+permissions* bigint (bit mask, see §2)
+position*    int (hierarchy; higher = above)
+hoist*       bool (show as a separate group in the member list)
 mentionable* bool
 ```
-> В каждом сервере есть неудаляемая роль `@everyone` с `position = 0`.
+> Every server has an undeletable `@everyone` role with `position = 0`.
 
 ### Channel
 ```
 id*         uuidv7 (pk)
-server_id   uuidv7 (fk Server, nullable)   # null => DM/групповой чат (Phase 1)
+server_id   uuidv7 (fk Server, nullable)   # null => DM/group chat (Phase 1)
 type*       enum: category | text | voice | dm
 name*       text, 1..100
 topic       text, nullable
 position*   int
-parent_id   uuidv7 (fk Channel, nullable)   # для вложенности в категорию
+parent_id   uuidv7 (fk Channel, nullable)   # for nesting under a category
 created_at* timestamptz
 ```
 
-### ChannelRecipient  (участники личного чата)
+### ChannelRecipient  (participants of a direct chat)
 ```
 channel_id*  uuidv7 (fk Channel)   # (channel_id, user_id) = pk
 user_id*     uuidv7 (fk User)
 ```
-> Личный чат = канал с `server_id = null` и `type = 'dm'`. Участников негде было
-> хранить (`Member` привязан к серверу), поэтому отдельная таблица. Права в DM
-> дают не роли, а само участие: `VIEW_CHANNEL | SEND_MESSAGES | ATTACH_FILES`.
+> A direct chat is a channel with `server_id = null` and `type = 'dm'`. Its
+> participants had nowhere to live (`Member` is keyed by server), hence the
+> separate table. Permissions in a DM come not from roles but from participation
+> itself: `VIEW_CHANNEL | SEND_MESSAGES | ATTACH_FILES`.
 
-### ChannelOverride  (пер-канальные оверрайды прав)
+### ChannelOverride  (per-channel permission overrides)
 ```
 channel_id*   uuidv7 (fk Channel)
 target_type*  enum: role | member
-target_id*    uuidv7                # role_id или user_id
-allow*        bigint (маска)
-deny*         bigint (маска)
+target_id*    uuidv7                # role_id or user_id
+allow*        bigint (mask)
+deny*         bigint (mask)
 ```
-> В Phase 0 можно не давать UI для оверрайдов, но резолвер прав их уже учитывает.
+> Phase 0 need not ship UI for overrides, but the permission resolver already
+> honours them.
 
 ### Message
 ```
-id*         uuidv7 (pk)            # сортировка = порядок сообщений
+id*         uuidv7 (pk)            # sorting = message order
 channel_id* uuidv7 (fk Channel)
 author_id*  uuidv7 (fk User)
 content*    text (markdown), 0..4000
@@ -123,105 +126,107 @@ edited_at   timestamptz, nullable
 ### Attachment
 ```
 id*          uuidv7 (pk)
-message_id*  uuidv7 (fk Message)      # вложение всегда принадлежит сообщению
-media_id*    text (ключ в storage-слое)
+message_id*  uuidv7 (fk Message)      # an attachment always belongs to a message
+media_id*    text (key in the storage layer)
 filename*    text
 content_type text
 size         bigint
 ```
-> Хранилище — за интерфейсом (`internal/storage`): дефолт `local` (диск,
-> `COVE_STORAGE_PATH`), S3-совместимое добавляется той же реализацией интерфейса.
-> В JSON вложение отдаётся с относительным `url` (`/api/v1/attachments/<id>`) —
-> клиент подставляет адрес своего инстанса.
+> Storage sits behind an interface (`internal/storage`): the default is `local`
+> (disk, `COVE_STORAGE_PATH`), and an S3-compatible backend is added as another
+> implementation of the same interface. In JSON an attachment carries a relative
+> `url` (`/api/v1/attachments/<id>`) — the client prefixes its own instance's
+> address.
 
-### Invite  (вступление в конкретный СЕРВЕР)
+### Invite  (joining a specific SERVER)
 ```
-code*        text (pk, короткий, напр. base62 8 симв.)
+code*        text (pk, short, e.g. 8 base62 chars)
 server_id*   uuidv7 (fk Server)
 created_by*  uuidv7 (fk User)
-max_uses     int, nullable (null = бесконечно)
+max_uses     int, nullable (null = unlimited)
 uses*        int, default 0
 expires_at   timestamptz, nullable
 created_at*  timestamptz
 ```
 
-### RegistrationToken  (доступ к ИНСТАНСУ — модель Matrix)
+### RegistrationToken  (access to the INSTANCE — the Matrix model)
 ```
-code*        text (pk, короткий)
-created_by*  uuidv7 (fk User)          # админ инстанса
+code*        text (pk, short)
+created_by*  uuidv7 (fk User)          # the instance admin
 max_uses     int, nullable
 uses*        int, default 0
 expires_at   timestamptz, nullable
 created_at*  timestamptz
 ```
-> Принципиально отдельная сущность от `Invite`. `RegistrationToken` открывает
-> регистрацию аккаунта **на инстансе**; `Invite` добавляет уже существующего
-> пользователя **в сервер**. Регистрация «открыта», но требует валидного токена,
-> выданного владельцем инстанса.
+> Deliberately a separate entity from `Invite`. A `RegistrationToken` unlocks
+> creating an account **on the instance**; an `Invite` adds an already existing
+> user **to a server**. Registration is "open" but requires a valid token issued
+> by the instance owner.
 
 ---
 
-## 2. Модель прав
+## 2. Permission model
 
-64-битная маска. Стартовый набор (номер = сдвиг бита):
+A 64-bit mask. The starting set (the number is the bit shift):
 
-| Бит | Право | Смысл |
-|-----|-------|-------|
-| 0 | `VIEW_CHANNEL` | видеть канал и читать историю |
-| 1 | `SEND_MESSAGES` | писать сообщения |
-| 2 | `MANAGE_MESSAGES` | удалять/закреплять чужие сообщения |
-| 3 | `MANAGE_CHANNELS` | создавать/менять/удалять каналы |
-| 4 | `MANAGE_ROLES` | управлять ролями (не выше своей) |
-| 5 | `KICK_MEMBERS` | кикать |
-| 6 | `BAN_MEMBERS` | банить |
-| 7 | `MANAGE_SERVER` | имя/иконка/настройки сервера |
-| 8 | `CREATE_INVITE` | создавать инвайты |
-| 9 | `MENTION_EVERYONE` | пинговать @everyone |
-| 10 | `ATTACH_FILES` | прикреплять файлы |
-| 11 | `CONNECT` | зайти в голосовой канал |
-| 12 | `SPEAK` | говорить и демонстрировать экран |
-| 63 | `ADMINISTRATOR` | обходит все проверки |
+| Bit | Permission | Meaning |
+|-----|------------|---------|
+| 0 | `VIEW_CHANNEL` | see the channel and read its history |
+| 1 | `SEND_MESSAGES` | post messages |
+| 2 | `MANAGE_MESSAGES` | delete/pin other people's messages |
+| 3 | `MANAGE_CHANNELS` | create/edit/delete channels |
+| 4 | `MANAGE_ROLES` | manage roles (none above your own) |
+| 5 | `KICK_MEMBERS` | kick |
+| 6 | `BAN_MEMBERS` | ban |
+| 7 | `MANAGE_SERVER` | server name/icon/settings |
+| 8 | `CREATE_INVITE` | create invites |
+| 9 | `MENTION_EVERYONE` | ping @everyone |
+| 10 | `ATTACH_FILES` | attach files |
+| 11 | `CONNECT` | join a voice channel |
+| 12 | `SPEAK` | talk and share the screen |
+| 63 | `ADMINISTRATOR` | bypasses every check |
 
-**Порядок резолва прав участника в канале:**
-1. Владелец сервера ИЛИ бит `ADMINISTRATOR` → всё разрешено, стоп.
-2. `base = permissions` роли `@everyone`.
-3. `base |= permissions` каждой роли участника (OR).
-4. Применить оверрайд `@everyone` канала: `base = (base & ~deny) | allow`.
-5. Собрать оверрайды ролей участника: `base = (base & ~Σdeny) | Σallow`.
-6. Применить member-оверрайд канала (высший приоритет).
+**Order of resolving a member's permissions in a channel:**
+1. Server owner OR the `ADMINISTRATOR` bit → everything allowed, stop.
+2. `base = permissions` of the `@everyone` role.
+3. `base |= permissions` of each of the member's roles (OR).
+4. Apply the channel's `@everyone` override: `base = (base & ~deny) | allow`.
+5. Merge the overrides of the member's roles: `base = (base & ~Σdeny) | Σallow`.
+6. Apply the channel's member override (highest priority).
 
 ---
 
-## 3. Gateway-протокол (WebSocket, v1)
+## 3. Gateway protocol (WebSocket, v1)
 
-Подключение: `GET /gateway?v=1&encoding=json` → апгрейд до WebSocket.
+Connect: `GET /gateway?v=1&encoding=json` → upgrade to WebSocket.
 
-**Envelope каждого фрейма:**
+**Envelope of every frame:**
 ```jsonc
 {
-  "op": 0,          // опкод (см. ниже)
-  "t":  "MESSAGE_CREATE", // тип события, только для op=0 (DISPATCH)
-  "s":  42,         // sequence, только для DISPATCH; клиент шлёт в heartbeat
-  "d":  { }         // полезная нагрузка
+  "op": 0,          // opcode (see below)
+  "t":  "MESSAGE_CREATE", // event type, only for op=0 (DISPATCH)
+  "s":  42,         // sequence, only for DISPATCH; the client echoes it in heartbeats
+  "d":  { }         // payload
 }
 ```
 
-**Опкоды:**
-| op | Имя | Направление | Назначение |
-|----|-----|-------------|------------|
-| 0 | DISPATCH | S→C | доставка события (`t` + `d`) |
-| 1 | HELLO | S→C | первый фрейм: `{ heartbeat_interval_ms }` |
+**Opcodes:**
+| op | Name | Direction | Purpose |
+|----|------|-----------|---------|
+| 0 | DISPATCH | S→C | event delivery (`t` + `d`) |
+| 1 | HELLO | S→C | first frame: `{ heartbeat_interval_ms }` |
 | 2 | IDENTIFY | C→S | `{ token }` |
-| 3 | READY | S→C | начальное состояние (см. ниже) |
-| 4 | HEARTBEAT | C→S | `{ s }` (последний полученный sequence) |
-| 5 | HEARTBEAT_ACK | S→C | подтверждение |
-| 6 | RESUME | C→S | `{ token, session_id, s }` — переподключение без потери |
-| 9 | INVALID_SESSION | S→C | нужно переидентифицироваться заново |
+| 3 | READY | S→C | initial state (see below) |
+| 4 | HEARTBEAT | C→S | `{ s }` (last received sequence) |
+| 5 | HEARTBEAT_ACK | S→C | acknowledgement |
+| 6 | RESUME | C→S | `{ token, session_id, s }` — reconnect without loss |
+| 9 | INVALID_SESSION | S→C | you must identify again from scratch |
 
-**Хендшейк:** connect → `HELLO` → клиент шлёт `IDENTIFY` → сервер шлёт `READY`
-→ далее клиент шлёт `HEARTBEAT` каждые `heartbeat_interval_ms`.
+**Handshake:** connect → `HELLO` → the client sends `IDENTIFY` → the server sends
+`READY` → from then on the client sends `HEARTBEAT` every
+`heartbeat_interval_ms`.
 
-**`READY.d`** (начальный снапшот):
+**`READY.d`** (the initial snapshot):
 ```jsonc
 {
   "session_id": "…",
@@ -234,7 +239,7 @@ created_at*  timestamptz
 }
 ```
 
-**События DISPATCH (Phase 0):**
+**DISPATCH events (Phase 0):**
 ```
 MESSAGE_CREATE   MESSAGE_UPDATE   MESSAGE_DELETE
 CHANNEL_CREATE   CHANNEL_UPDATE   CHANNEL_DELETE
@@ -242,18 +247,20 @@ ROLE_CREATE      ROLE_UPDATE      ROLE_DELETE
 MEMBER_JOIN      MEMBER_UPDATE    MEMBER_LEAVE
 TYPING_START     PRESENCE_UPDATE  DM_CREATE
 ```
-> События канала доставляются только тем, у кого есть `VIEW_CHANNEL`
-> (для личного чата — только его участникам). Подписка: каналы сервера — через
-> сервер, личные чаты — поканально.
-`d` каждого события = соответствующий объект из §1 (или его дельта).
-`TYPING_START.d` = `{ channel_id, user_id, user }` — юзер вложен целиком,
-чтобы клиенту не приходилось отдельно резолвить имя.
+> Channel events are delivered only to those holding `VIEW_CHANNEL` (for a
+> direct chat, only to its participants). Subscriptions: server channels via the
+> server, direct chats per channel.
+
+The `d` of each event is the corresponding object from §1 (or a delta of it).
+`TYPING_START.d` = `{ channel_id, user_id, user }` — the user is inlined in full
+so the client never has to resolve the name separately.
 
 ---
 
-## 4. REST-поверхность (Phase 0)
+## 4. REST surface (Phase 0)
 
-Все под `/api/v1`. Аутентификация — заголовок `Authorization: <token>`.
+Everything lives under `/api/v1`. Authentication: the `Authorization: <token>`
+header.
 
 ```
 # auth
@@ -264,9 +271,9 @@ POST   /auth/logout
 # self
 GET    /users/@me
 PATCH  /users/@me
-GET    /users/@me/channels          # личные чаты
+GET    /users/@me/channels          # direct chats
 POST   /users/@me/channels          { username } | { recipient_id }
-                                    # создаёт чат или возвращает существующий (200)
+                                    # creates a chat or returns the existing one (200)
 
 # servers
 POST   /servers                  { name } -> Server
@@ -283,33 +290,33 @@ POST   /servers/:id/roles
 GET    /channels/:id
 PATCH  /channels/:id
 DELETE /channels/:id
-GET    /channels/:id/messages    ?before=<msgid>&limit=50   (курсорная пагинация)
+GET    /channels/:id/messages    ?before=<msgid>&limit=50   (cursor pagination)
 POST   /channels/:id/messages    { content, reply_to? }
-       # либо multipart/form-data: поле payload_json (тот же JSON) + поля files.
-       # Файлы отправляются вместе с сообщением одним запросом — вложений-сирот
-       # не бывает by design. Требует права ATTACH_FILES.
+       # or multipart/form-data: a payload_json field (the same JSON) + files fields.
+       # Files are sent together with the message in one request, so orphaned
+       # attachments cannot exist by design. Requires ATTACH_FILES.
 
-GET    /attachments/:id          # отдаёт файл; проверяет VIEW_CHANNEL канала сообщения
+GET    /attachments/:id          # serves the file; checks VIEW_CHANNEL on the message's channel
 PATCH  /channels/:id/messages/:mid
 DELETE /channels/:id/messages/:mid
 POST   /channels/:id/typing
 POST   /channels/:id/voice/token    # -> { url, token, can_speak }
-       # Токен LiveKit для голосового канала. Комната = id канала,
-       # личность = id юзера. Нужен CONNECT; без SPEAK — can_speak:false
-       # (заходит слушателем, canPublish=false прямо в токене).
-       # 503, если на инстансе голос не настроен.
+       # A LiveKit token for a voice channel. Room = channel id,
+       # identity = user id. Requires CONNECT; without SPEAK it returns
+       # can_speak:false (joins as a listener, canPublish=false in the token).
+       # 503 if voice is not configured on the instance.
 
 # invites
 POST   /servers/:id/invites      { max_uses?, expires_at? } -> Invite
-POST   /invites/:code            # принять инвайт, вступить в сервер
-GET    /invites/:code            # превью сервера до вступления
+POST   /invites/:code            # accept an invite, join the server
+GET    /invites/:code            # preview the server before joining
 
-# admin (инстанс; требует instance_owner)
+# admin (instance-level; requires instance_owner)
 POST   /admin/registration-tokens   { max_uses?, expires_at? } -> RegistrationToken
 GET    /admin/registration-tokens
 DELETE /admin/registration-tokens/:code
 
-# инстанс (публично) — клиент должен знать возможности конкретного сервера
+# instance (public) — a client must know a given server's capabilities
 GET    /instance                 -> { voice_enabled, open_registration, max_upload_mb }
 
 # gateway discovery
@@ -318,18 +325,24 @@ GET    /gateway                  -> { url: "wss://host/gateway" }
 
 ---
 
-## 5. Зафиксированные решения
+## 5. Settled decisions
 
-1. **Бэкенд** — Go + PostgreSQL + sqlc. ✓
-2. **Регистрация** — открытая, но по `RegistrationToken` от владельца инстанса (модель Matrix). ✓
-3. **Presence** — online/offline в Phase 0, выводится из состояния gateway-подключений. ✓
-4. **Репозитории** — корневой мета-репо (`docs/`) + независимые `cove-server/` и `cove-web/`. ✓
-5. **Клиент** — React (Vite). ✓
-6. **Dev-окружение** — Nix flake dev-shell в `cove-server/` (go, sqlc, golang-migrate, psql). ✓
+1. **Backend** — Go + PostgreSQL + sqlc. ✓
+2. **Registration** — open, but gated by a `RegistrationToken` from the instance
+   owner (the Matrix model). ✓
+3. **Presence** — online/offline in Phase 0, derived from the state of gateway
+   connections. ✓
+4. **Repositories** — three independent repos side by side: `cove-meta/`
+   (`docs/`, `deploy/`), `cove-server/` and `cove-web/`. ✓
+5. **Client** — React (Vite). ✓
+6. **Dev environment** — a Nix flake dev-shell in `cove-server/` (go, sqlc,
+   golang-migrate, psql). ✓
+7. **Language** — everything inside the repositories is written in English:
+   comments, configuration and these docs. ✓
 
-## 6. Роль «владельца инстанса»
+## 6. The "instance owner" role
 
-Первый зарегистрированный аккаунт (либо заданный через `COVE_ADMIN_USERNAME`)
-получает `instance_owner = true`. Только он выпускает `RegistrationToken` и позже
-управляет инстансом. Это **не** то же самое, что владелец сервера
-(`Server.owner_id`): один — про инстанс, другой — про конкретный сервер.
+The first account to register (or the one named by `COVE_ADMIN_USERNAME`) gets
+`instance_owner = true`. Only they issue `RegistrationToken`s and, later,
+administer the instance. This is **not** the same as a server owner
+(`Server.owner_id`): one is about the instance, the other about one server.

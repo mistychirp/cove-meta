@@ -1,0 +1,32 @@
+# Caddy сам получает и продлевает сертификат Let's Encrypt для COVE_DOMAIN.
+# Клиент и API живут на одном домене — поэтому CORS в проде не нужен вообще.
+{$COVE_DOMAIN} {
+	encode zstd gzip
+
+	# REST API
+	handle /api/* {
+		reverse_proxy server:8080
+	}
+
+	# WebSocket-gateway. Caddy проксирует апгрейд сам, без спец-настроек.
+	handle /gateway {
+		reverse_proxy server:8080
+	}
+
+	handle /health {
+		reverse_proxy server:8080
+	}
+
+	# Сигналинг LiveKit (WebSocket). Медиа сюда НЕ идёт — оно летит напрямую
+	# по UDP на хост, мимо Caddy. Поэтому важен проброс UDP-портов на роутере.
+	handle_path /livekit/* {
+		reverse_proxy livekit:7880
+	}
+
+	# Всё остальное — статика клиента. SPA: неизвестные пути отдаём index.html.
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

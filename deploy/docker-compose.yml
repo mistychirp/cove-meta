@@ -1,0 +1,87 @@
+name: cove
+
+# Продакшн-стек Cove. Требует .env рядом (см. .env.example).
+# Собирает соседние репозитории ../cove-server и ../cove-web.
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      COVE_DOMAIN: ${COVE_DOMAIN:?задай COVE_DOMAIN в .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - web-dist:/srv:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      web:
+        condition: service_completed_successfully
+      server:
+        condition: service_started
+
+  # Собирает статику клиента в том web-dist и завершается.
+  web:
+    build: ../cove-web
+    volumes:
+      - web-dist:/dist
+
+  server:
+    build: ../cove-server
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      COVE_DATABASE_URL: postgres://cove:${COVE_DB_PASSWORD:?задай COVE_DB_PASSWORD}@db:5432/cove?sslmode=disable
+      COVE_LISTEN_ADDR: ":8080"
+      COVE_ADMIN_USERNAME: ${COVE_ADMIN_USERNAME:-}
+      COVE_OPEN_REGISTRATION: "${COVE_OPEN_REGISTRATION:-false}"
+      COVE_STORAGE_PATH: /data/media
+      COVE_MAX_UPLOAD_MB: "${COVE_MAX_UPLOAD_MB:-25}"
+      # Адрес для браузера: сигналинг идёт через Caddy по TLS.
+      COVE_LIVEKIT_URL: wss://${COVE_DOMAIN}/livekit
+      COVE_LIVEKIT_API_KEY: ${COVE_LIVEKIT_API_KEY:?задай COVE_LIVEKIT_API_KEY}
+      COVE_LIVEKIT_API_SECRET: ${COVE_LIVEKIT_API_SECRET:?задай COVE_LIVEKIT_API_SECRET}
+    volumes:
+      - cove-media:/data/media
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cove
+      POSTGRES_PASSWORD: ${COVE_DB_PASSWORD:?задай COVE_DB_PASSWORD}
+      POSTGRES_DB: cove
+    volumes:
+      - cove-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cove -d cove"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  livekit:
+    image: livekit/livekit-server:latest
+    restart: unless-stopped
+    command: --config /etc/livekit.yaml
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    environment:
+      # Формат LiveKit: "ключ: секрет"
+      LIVEKIT_KEYS: "${COVE_LIVEKIT_API_KEY}: ${COVE_LIVEKIT_API_SECRET}"
+    ports:
+      # 7880 наружу не публикуем: сигналинг ходит только через Caddy по TLS.
+      - "7881:7881"                    # TCP-фолбэк для ICE
+      - "3478:3478/udp"                # встроенный TURN
+      - "50000-50060:50000-50060/udp"  # медиа-трафик
+
+volumes:
+  cove-db:
+  cove-media:
+  web-dist:
+  caddy-data:
+  caddy-config:

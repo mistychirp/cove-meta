@@ -1,0 +1,4 @@
+# Секреты продакшна — никогда не коммитить
+deploy/.env
+deploy/*.env
+!deploy/.env.example

@@ -1,0 +1,21 @@
+# LiveKit для продакшна (домашний сервер за NAT).
+# Ключи задаются через переменную LIVEKIT_KEYS в docker-compose — в файле их нет.
+port: 7880
+
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50060
+  # За домашним NAT LiveKit сам выяснит публичный адрес через STUN и будет
+  # анонсировать его клиентам. Без этого они попытаются идти на 192.168.x.x.
+  use_external_ip: true
+
+# Встроенный TURN — для тех, у кого NAT/файрвол не пускает прямой UDP
+# (мобильный интернет, рабочие сети). Без него у части друзей голос не пойдёт.
+turn:
+  enabled: true
+  udp_port: 3478
+  domain: mistyworks.servebeer.com
+
+logging:
+  level: info

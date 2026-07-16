@@ -24,6 +24,27 @@
 		reverse_proxy livekit:7880
 	}
 
+	# Service Worker paths, served before the SPA fallback gets them.
+	#
+	# A worker belongs to the origin, not to the app that installed it, so one
+	# left behind by whatever was hosted here before keeps serving its own
+	# cached app from the browser. It cannot even be replaced by accident: the
+	# browser re-fetches the worker's URL to check for an update, the fallback
+	# below answers with index.html, and an update with a text/html MIME type
+	# fails — so the old worker stays forever. Answering these paths with real
+	# JavaScript (see cove-web/public/sw.js) lets it be replaced and removed.
+	#
+	# The paths cover the usual names, since the ghost chooses its own.
+	@sw path /sw.js /service-worker.js /worker.js /firebase-messaging-sw.js
+	handle @sw {
+		root * /srv
+		rewrite * /sw.js
+		# Never let the kill switch itself be cached: that is how the first one
+		# got stuck.
+		header Cache-Control "no-cache, no-store, must-revalidate"
+		file_server
+	}
+
 	# Everything else is the client bundle. SPA: unknown paths serve index.html.
 	handle {
 		root * /srv

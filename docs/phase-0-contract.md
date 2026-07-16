@@ -64,6 +64,9 @@ nickname    text, nullable
 joined_at*  timestamptz
 # a member's roles live in the MemberRole table (many-to-many)
 ```
+> Over the API a Member carries `roles`: the ids it holds, **excluding** the
+> implicit `@everyone`. Without it a client cannot colour a name or show who
+> moderates — the roles would exist but be invisible.
 
 ### Role
 ```
@@ -196,6 +199,55 @@ A 64-bit mask. The starting set (the number is the bit shift):
 
 ---
 
+## 2a. Role hierarchy — what makes MANAGE_ROLES safe
+
+Without the rules below, `MANAGE_ROLES` is not a moderator power but a synonym
+for "owns the server": its holder mints a role with `ADMINISTRATOR`, wears it,
+and the rest of the permission model is decoration. Both rules are enforced
+server-side; a client must not be the thing that stops this.
+
+**Rank** is the position of a member's highest role. The owner outranks every
+role that can exist. `@everyone` sits at 0, so a member with no other role
+ranks 0 and can act on nothing.
+
+1. **Rank rule.** You may only create, edit, delete or hand out a role
+   **strictly below** your rank. Equal loses — holding a role must not let you
+   edit it, or a moderator would promote their own role and climb.
+2. **Grant rule.** You may only put permissions on a role that **you already
+   hold**. Otherwise a moderator who cannot ban mints a role that can.
+   `ADMINISTRATOR` bypasses this, since its holder already has everything.
+
+Editing checks the role **both as it stands and as it would become**: otherwise
+you could move a harmless role up and only then add permissions to it, or edit
+a role you outrank into one you do not.
+
+Acting on a *member* (taking a role away) additionally requires outranking that
+member — peers must not strip each other, and nobody touches the owner.
+
+> Historical note: this was specified from the start ("manage roles, none above
+> your own") but not implemented. A member with `MANAGE_ROLES` could create an
+> `ADMINISTRATOR` role at position 9999 and got a 200. It stayed unexploitable
+> only because no endpoint could assign a role yet — the fix landed together
+> with those endpoints.
+
+## 2b. Permissions travel as strings
+
+`permissions` is a **decimal string** in JSON (`"48"`, `"-9223372036854775808"`),
+never a number. This is not fussiness — a JSON number cannot carry the mask:
+
+- **Precision.** The mask is int64 and `ADMINISTRATOR` is bit 63. A JavaScript
+  client parsing `ADMINISTRATOR | KICK_MEMBERS` (`-9223372036854775776`) gets
+  `-9223372036854776000` back: the KICK bit is gone, silently. Round-tripping
+  such a role through a client would corrupt it.
+- **Bitwise.** JavaScript's `&` and `|` truncate to 32 bits, so `1 << 63`
+  overflows to `-2147483648` and testing the ADMINISTRATOR bit with plain
+  numbers is not merely lossy, it is impossible.
+
+Clients must parse it into a 64-bit type (`BigInt` in JavaScript) and send it
+back as a string. Discord does the same, for the same reason.
+
+---
+
 ## 3. Gateway protocol (WebSocket, v1)
 
 Connect: `GET /gateway?v=1&encoding=json` → upgrade to WebSocket.
@@ -266,6 +318,10 @@ header.
 # auth
 POST   /auth/register            { username, display_name, email, password, registration_token }
 POST   /auth/login               { login, password } -> { token, user }
+       # Both are rate limited per client address: COVE_AUTH_BURST requests
+       # back to back (default 10), then one more every COVE_AUTH_REFILL_SECONDS
+       # (default 15). Over budget => 429 with a Retry-After header in seconds.
+       # A client should honour Retry-After rather than spin.
 POST   /auth/logout
 
 # self
@@ -284,7 +340,14 @@ GET    /servers/:id/members
 GET    /servers/:id/channels
 POST   /servers/:id/channels     { type, name, parent_id? }
 GET    /servers/:id/roles
-POST   /servers/:id/roles
+POST   /servers/:id/roles          { name, permissions, position, color?, hoist?, mentionable? }
+PATCH  /servers/:id/roles/:rid
+DELETE /servers/:id/roles/:rid
+PUT    /servers/:id/members/:uid/roles/:rid    # give a member a role
+DELETE /servers/:id/members/:uid/roles/:rid    # take it away
+       # All of the above need MANAGE_ROLES *and* obey the hierarchy in §2a.
+       # @everyone (role id == server id) cannot be deleted, cannot leave
+       # position 0, and cannot be handed out — it is implicit.
 
 # channels
 GET    /channels/:id
@@ -324,6 +387,38 @@ GET    /gateway                  -> { url: "wss://host/gateway" }
 ```
 
 ---
+
+## 4a. Rate limiting and client addresses
+
+`/auth/register` and `/auth/login` are the only endpoints reachable without a
+token, and each costs an argon2id hash — 64 MB of memory and four threads by
+design. That cost is right against password cracking, but it means an
+unauthenticated caller can make the server allocate 64 MB per request as fast as
+it can send them; on a home server that exhausts RAM long before it exhausts the
+password space. So both are limited **before** the handler runs, and a rejected
+request never starts the hash.
+
+Over budget returns **429** with `Retry-After` in seconds.
+
+**Attributing a request to an address** is the subtle part, and both naive
+readings are wrong:
+
+- Always trusting `X-Forwarded-For` lets anyone send a random value and land in
+  a fresh bucket every time. The limiter then does nothing while appearing to
+  work — worse than not having one.
+- Never trusting it collapses every user behind the reverse proxy into a single
+  bucket keyed by the proxy, so one attacker locks out everybody.
+
+Cove trusts the header exactly when the immediate peer is loopback or a private
+address — i.e. a reverse proxy on the same host or container network, which is
+what `deploy/` sets up. When the server is exposed directly, the peer is public,
+the header is ignored, and `RemoteAddr` is used (it cannot be forged over TCP).
+The header is read right to left, taking the first address that is not a trusted
+proxy, so an entry a client prepends itself cannot win.
+
+**Implication for anyone deploying Cove:** if you put it behind a proxy, that
+proxy must set `X-Forwarded-For` (Caddy's `reverse_proxy` does automatically).
+If you put it behind a proxy that does *not*, every user shares one bucket.
 
 ## 5. Settled decisions
 
